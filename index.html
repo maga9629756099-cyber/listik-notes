@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#f5f2fd">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Листик">
+  <meta name="description" content="Бесплатные рукописные тетради со стилусом и режимом чтения">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <title>Листик – рукописные заметки</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-heading"><div class="logo"><span class="logo-mark">✦</span> Листик</div><button class="icon-btn side-close" id="closeSide" aria-label="Закрыть список">✕</button></div>
+      <p class="side-kicker">МОЯ БИБЛИОТЕКА</p>
+      <button class="new-note" id="newNote">＋ Новая тетрадь</button>
+      <div class="search-wrap"><span>⌕</span><input id="search" placeholder="Поиск тетрадей" aria-label="Поиск тетрадей"></div>
+      <div class="side-section"><span>Все тетради</span><span id="notesCount">0</span></div>
+      <div class="notes-list" id="notesList"></div>
+      <div class="side-footer">
+        <button class="footer-btn" id="cloudBtn">☁ &nbsp; Подключить синхронизацию</button>
+        <button class="footer-btn" id="exportBtn">⇩ &nbsp; Сохранить все заметки</button>
+        <button class="footer-btn" id="importBtn">⇧ &nbsp; Загрузить копию</button>
+        <input id="importFile" type="file" accept=".json,application/json" hidden>
+        <small>Записи сохраняются на устройстве. Для обмена между устройствами подключи Google Диск.</small>
+      </div>
+    </aside>
+    <div class="side-scrim" id="sideScrim"></div>
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn show-mobile" id="openSide" aria-label="Открыть библиотеку">☰</button>
+        <div class="crumb">Мои заметки <span>›</span></div>
+        <input id="title" class="note-title" placeholder="Название тетради" aria-label="Название тетради">
+        <div class="top-actions">
+          <button class="subtle-action edit-only" id="deleteNote" title="Удалить тетрадь">♲</button>
+          <button class="subtle-action" id="syncBtn" title="Синхронизировать">☁ <span class="hide-mobile">Синхр.</span></button>
+          <button class="mode-btn" id="modeBtn" aria-pressed="false"><span id="modeIcon">◉</span><span id="modeText">Режим чтения</span></button>
+        </div>
+      </header>
+      <div class="edit-area" id="editArea">
+        <nav class="toolbar" aria-label="Инструменты">
+          <div class="tools-group">
+            <button class="tool active" data-tool="pen" title="Ручка">✎ <span>Ручка</span></button>
+            <button class="tool" data-tool="pencil" title="Карандаш">✐ <span>Карандаш</span></button>
+            <button class="tool" data-tool="marker" title="Маркер">▰ <span>Маркер</span></button>
+            <button class="tool" data-tool="eraser" title="Ластик">⌫ <span>Ластик</span></button>
+            <button class="tool" data-tool="line" title="Прямая линия">╱ <span>Линия</span></button>
+            <button class="tool" data-tool="rect" title="Прямоугольник">▢ <span>Фигура</span></button>
+            <button class="tool" data-tool="text" title="Добавить печатный текст">T <span>Текст</span></button>
+          </div>
+          <div class="tool-divider"></div>
+          <div id="colors" class="colors" aria-label="Цвет чернил"></div>
+          <label class="mini-select">Толщина <select id="widthSelect"><option value="2">1</option><option selected value="4">2</option><option value="7">3</option><option value="11">4</option></select></label>
+          <div class="tool-divider"></div>
+          <button class="icon-btn" id="undoBtn" title="Отменить">↶</button>
+          <button class="icon-btn" id="redoBtn" title="Повторить">↷</button>
+        </nav>
+        <div class="optionsbar">
+          <label>Бумага <select id="paperType"><option value="lined">В линейку</option><option value="grid">В клетку</option><option value="dots">В точку</option><option value="blank">Чистая</option></select></label>
+          <label class="pen-only"><input type="checkbox" id="penOnly" checked> Писать только стилусом</label>
+          <span class="options-spacer"></span>
+          <button id="savePNG" class="plain-btn">⇩ PNG</button>
+          <button id="savePDF" class="plain-btn">⇩ PDF</button>
+        </div>
+      </div>
+      <div class="reader-tip" id="readerTip" hidden>◉ &nbsp; Режим чтения · рисование отключено · листай страницы стилусом вправо или влево</div>
+      <div class="workspace" id="workspace">
+        <div class="page-nav">
+          <button class="icon-btn page-arrow" id="prevPage" title="Предыдущая страница">‹</button>
+          <button class="page-number" id="pageOverviewBtn">Страница <strong id="pageNumber">1</strong> из <strong id="pageTotal">1</strong> ▾</button>
+          <button class="icon-btn page-arrow" id="nextPage" title="Следующая страница">›</button>
+          <span class="page-nav-spacer"></span>
+          <button class="small-btn edit-only" id="addPage">＋ Страница</button>
+          <button class="icon-btn edit-only" id="deletePage" title="Удалить страницу">♲</button>
+          <button class="small-btn" id="zoom">100%</button>
+        </div>
+        <div class="sheet" id="pageWrap"><canvas id="paper" width="1000" height="1400" aria-label="Бумага для заметок"></canvas></div>
+        <p class="page-footnote" id="pageFootnote">Рисуй стилусом или мышью на странице.</p>
+      </div>
+      <div class="status" id="status" role="status" aria-live="polite">Загрузка...</div>
+    </main>
+  </div>
+  <dialog id="pagesDialog" class="dialog"><h2>Страницы тетради</h2><p>Нажми на миниатюру, чтобы открыть страницу.</p><div class="page-grid" id="pageGrid"></div><div class="dialog-actions"><button id="closePages">Закрыть</button></div></dialog>
+  <dialog id="cloudDialog" class="dialog"><h2>☁ Синхронизация</h2><p>Между Huawei и iPhone заметки могут обмениваться через личный Google Диск. Для этого требуется бесплатный OAuth Client ID из Google Cloud. Пароль Google здесь вводить не нужно.</p><label class="field-label">OAuth Client ID<input id="clientId" type="text" placeholder="123456789-xxxxx.apps.googleusercontent.com" autocapitalize="off" autocomplete="off" spellcheck="false"></label><p class="hint">Нужно разместить приложение на HTTPS-адресе и добавить этот адрес в Google Cloud. Инструкция есть в архиве.</p><div class="dialog-actions"><button id="cancelCloud">Отмена</button><button class="primary" id="connectCloud">Подключить</button></div></dialog>
+</body>
+</html>
