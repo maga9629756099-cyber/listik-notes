@@ -57,14 +57,14 @@
           </div>
           <div class="tool-divider"></div>
           <div id="colors" class="colors" aria-label="Цвет чернил"></div>
-          <label class="mini-select">Толщина <select id="widthSelect"><option value="2">1</option><option selected value="4">2</option><option value="7">3</option><option value="11">4</option></select></label>
+          <label class="width-control" for="widthSelect"><span>Толщина</span><input id="widthSelect" type="range" min="0.5" max="28" step="0.5" value="4" aria-label="Толщина линии"><output id="widthValue" for="widthSelect">4</output></label>
           <div class="tool-divider"></div>
           <button class="icon-btn" id="undoBtn" title="Отменить">↶</button>
           <button class="icon-btn" id="redoBtn" title="Повторить">↷</button>
         </nav>
         <div class="optionsbar">
           <label>Бумага <select id="paperType"><option value="lined">В линейку</option><option value="grid">В клетку</option><option value="dots">В точку</option><option value="blank">Чистая</option></select></label>
-          <label class="pen-only"><input type="checkbox" id="penOnly" checked> Писать только стилусом</label>
+          <label class="pen-only"><input type="checkbox" id="penOnly"> Писать только стилусом</label><span class="gesture-help">1 палец – писать · 2 пальца – листать</span>
           <span class="options-spacer"></span>
           <button id="savePNG" class="plain-btn">⇩ PNG</button>
           <button id="savePDF" class="plain-btn">⇩ PDF</button>

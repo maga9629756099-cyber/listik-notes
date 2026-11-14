@@ -7,8 +7,16 @@ const CLOUD_NAME = 'listik-notebooks-v2.json';
 const CLOUD_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const COLORS = ['#303044','#6b5cc3','#3279b7','#d36b79','#459c83','#d49a42','#222222'];
 const paper = $('paper'), context = paper.getContext('2d'), wrap = $('pageWrap');
-let notes = [], selectedId = null, pageIndex = 0, tool = 'pen', brushColor = COLORS[0], brushWidth = 4;
-let penOnly = true, readOnly = false, activePointer = null, activeStroke = null, swipeStart = null;
+let notes = [], selectedId = null, pageIndex = 0, tool = 'pen', brushColor = COLORS[0];
+const savedWidth = Number(localStorage.getItem('listik_brush_width'));
+let brushWidth = Number.isFinite(savedWidth) && savedWidth >= .5 && savedWidth <= 28 ? savedWidth : 4;
+let penOnly = localStorage.getItem('listik_pen_only') === 'true';
+let readOnly = false, activePointer = null, activePointerType = null, activeStroke = null, pendingText = null, swipeStart = null;
+// На холсте один палец пишет (когда отключено «только стилусом»), два пальца перемещают лист.
+// При включенном «только стилусом» даже один палец перемещает лист, но стилус всегда рисует.
+const touchPointers = new Map();
+let touchScrolling = false, touchScrollOrigin = null, touchGestureLock = false;
+let paintFrame = 0;
 let history = [], future = [], saveTimer = null, syncTimer = null, initialized = false;
 let token = '', tokenExpiry = 0, tokenClient = null, cloudFileId = null, syncing = false, rerunSync = false;
 let syncEditCounter = 0, editCounter = 0, zoomIndex = 0;
@@ -73,7 +81,17 @@ function renderList(){
   }
 }
 function applyPaper(){wrap.classList.remove('lined','grid','dots','blank');wrap.classList.add(current()?.paper||'lined');$('paperType').value=current()?.paper||'lined';}
-function syncTouchAction(){paper.style.touchAction = (readOnly || penOnly) ? 'pan-y' : 'none';}
+function syncTouchAction(){
+  // В режиме письма системная прокрутка должна быть отключена ДО pointerdown,
+  // иначе браузер отменяет движение стилуса через pointercancel.
+  const action = readOnly ? 'pan-y' : 'none';
+  paper.style.touchAction = action;
+  wrap.style.touchAction = action;
+}
+function scheduleRedraw(){
+  if(paintFrame) return;
+  paintFrame = requestAnimationFrame(()=>{paintFrame=0;redraw();});
+}
 function render(){
   let n=current();if(!n){n=notes.find(x=>!x.deleted);if(n){selectedId=n.id;pageIndex=0;}}
   pageIndex=Math.max(0,Math.min(pageIndex,Math.max(0,(n?.pages.length||1)-1)));
@@ -82,7 +100,10 @@ function render(){
   $('prevPage').disabled=pageIndex===0;$('nextPage').disabled=!n||pageIndex===(n.pages.length-1);
   $('addPage').disabled=!n;$('deletePage').disabled=!n||n.pages.length===1;$('deleteNote').disabled=!n;
   $('undoBtn').disabled=!history.length;$('redoBtn').disabled=!future.length;
-  $('pageFootnote').textContent=readOnly?'Листай вправо или влево стилусом или пальцем. Рисование выключено.':'Чернила сохраняются автоматически. Для защиты от случайных линий включи режим чтения.';
+  $('pageFootnote').textContent=readOnly
+    ? 'Режим чтения: листай страницы без случайных линий.'
+    : penOnly ? 'Стилус пишет · пальцем перемещай лист · два пальца тоже перемещают.'
+    : 'Один палец или стилус пишет · двумя пальцами перемещай лист.';
   applyPaper();redraw();renderList();syncTouchAction();
 }
 function drawStroke(c,s){
@@ -112,7 +133,12 @@ function drawStroke(c,s){
   }
   c.restore();
 }
-function redraw(){context.clearRect(0,0,W,H);for(const s of current()?.pages[pageIndex]||[])drawStroke(context,s);if(activeStroke)drawStroke(context,activeStroke);}
+function redraw(){
+  if(paintFrame){cancelAnimationFrame(paintFrame);paintFrame=0;}
+  context.clearRect(0,0,W,H);
+  for(const s of current()?.pages[pageIndex]||[])drawStroke(context,s);
+  if(activeStroke)drawStroke(context,activeStroke);
+}
 function pointFrom(e){const r=paper.getBoundingClientRect();return [Math.max(0,Math.min(W, (e.clientX-r.left)*W/r.width)),Math.max(0,Math.min(H, (e.clientY-r.top)*H/r.height)), e.pointerType==='pen' ? (e.pressure || 0.5) : undefined];}
 function segmentDistance(p,a,b){const dx=b[0]-a[0],dy=b[1]-a[1],sq=dx*dx+dy*dy;if(!sq)return Math.hypot(p[0]-a[0],p[1]-a[1]);const t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/sq));return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);}
 function eraseAt(p){
@@ -123,60 +149,189 @@ function eraseAt(p){
     if(s.tool==='rect'&&pts.length>1){const a=pts[0],b=pts.at(-1);const corners=[a,[b[0],a[1]],b,[a[0],b[1]],a];return !corners.some((corner,i)=>i&&segmentDistance(p,corners[i-1],corner)<tolerance);}
     return !pts.some((q,i)=>segmentDistance(p,q,pts[Math.min(i+1,pts.length-1)])<tolerance);
   });
-  if(remaining.length===before.length)return false;n.pages[pageIndex]=remaining;redraw();return true;
+  if(remaining.length===before.length)return false;n.pages[pageIndex]=remaining;return true;
 }
 function remember(){if(!current())return;history.push(clone(current().pages[pageIndex]));if(history.length>80)history.shift();future=[];}
-function changePage(delta){const n=current();if(!n)return;const next=pageIndex+delta;if(next<0||next>=n.pages.length)return;pageIndex=next;activeStroke=null;activePointer=null;history=[];future=[];render();}
-function handleReadingDown(e){if(!current())return;swipeStart={pointerId:e.pointerId,x:e.clientX,y:e.clientY};if(e.pointerType==='pen')paper.setPointerCapture(e.pointerId);}
+function changePage(delta){
+  const n=current();if(!n)return;const next=pageIndex+delta;if(next<0||next>=n.pages.length)return;
+  pageIndex=next;activeStroke=null;activePointer=null;activePointerType=null;pendingText=null;
+  touchPointers.clear();touchScrolling=false;touchScrollOrigin=null;touchGestureLock=false;
+  history=[];future=[];render();
+}
+function handleReadingDown(e){if(!current())return;swipeStart={pointerId:e.pointerId,x:e.clientX,y:e.clientY};if(e.pointerType==='pen'){try{paper.setPointerCapture(e.pointerId);}catch(_){}}}
 function handleReadingEnd(e){
   if(!readOnly||!swipeStart||swipeStart.pointerId!==e.pointerId)return;
   const dx=e.clientX-swipeStart.x,dy=e.clientY-swipeStart.y;swipeStart=null;
   if(Math.abs(dx)>65&&Math.abs(dx)>Math.abs(dy)*1.25)changePage(dx<0?1:-1);
 }
+// Для ручного перемещения листа CSS touch-action:none отключает браузерную прокрутку.
+// Координаты пальцев обрабатываются отдельно от координат пера.
+function touchCenter(){
+  const points=[...touchPointers.values()];
+  if(!points.length)return null;
+  return {x:points.reduce((sum,p)=>sum+p.x,0)/points.length,
+    y:points.reduce((sum,p)=>sum+p.y,0)/points.length};
+}
+function releaseTouch(pointerId){
+  touchPointers.delete(pointerId);
+  if(touchPointers.size===0){
+    touchScrolling=false;touchScrollOrigin=null;touchGestureLock=false;
+  }else if(touchScrolling){
+    if(!penOnly&&touchPointers.size<2){touchScrolling=false;touchGestureLock=true;touchScrollOrigin=null;}
+    else touchScrollOrigin=touchCenter();
+  }
+}
+function cancelActiveDrawing(){
+  if(activePointer===null)return;
+  // Прерывание первого пальца вторым не должно оставлять даже точку или след ластика.
+  if(!pendingText && history.length&&current()){
+    current().pages[pageIndex]=history.pop();
+    future=[];
+  }
+  activePointer=null;activePointerType=null;activeStroke=null;pendingText=null;
+  redraw();render();
+}
+function beginTouchScroll(){
+  if(activePointer!==null&&activePointerType==='touch')cancelActiveDrawing();
+  touchScrolling=true;touchScrollOrigin=touchCenter();
+  if(touchPointers.size>=2)touchGestureLock=true;
+}
+function scrollPaperWithTouch(e){
+  if(!touchPointers.has(e.pointerId))return false;
+  touchPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  // Ладонь не мешает писать распознанным цифровым пером.
+  if(activePointerType==='pen')return true;
+  if(touchScrolling){
+    if(touchPointers.size>=2||penOnly){
+      const center=touchCenter();
+      if(touchScrollOrigin&&center){
+        $('workspace').scrollTop-=center.y-touchScrollOrigin.y;
+        $('workspace').scrollLeft-=center.x-touchScrollOrigin.x;
+      }
+      touchScrollOrigin=center;
+    }
+    e.preventDefault();return true;
+  }
+  if(touchGestureLock){e.preventDefault();return true;}
+  return false;
+}
+function addTypedText(value,point){
+  remember();current().pages[pageIndex].push({tool:'text',color:brushColor,width:brushWidth,points:[point],value});
+  redraw();changed();render();
+}
 paper.addEventListener('pointerdown',e=>{
   if(readOnly){handleReadingDown(e);return;}
-  if(!current()||e.button!==0||(penOnly&&e.pointerType!=='pen')||(e.pointerType==='touch'&&e.width>36))return;
-  if(tool==='text'){
-    const value=prompt('Введи текст, который нужно разместить на странице:');
-    if(!value)return;remember();current().pages[pageIndex].push({tool:'text',color:brushColor,width:brushWidth,points:[pointFrom(e)],value});redraw();changed();render();return;
+  if(!current()||(e.pointerType==='mouse'&&e.button!==0))return;
+  if(e.pointerType==='touch'){
+    // Широкие касания похожи на ладонь; не начинаем ими линию.
+    if(e.width>36&&activePointerType!=='touch')return;
+    touchPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    try{paper.setPointerCapture(e.pointerId);}catch(_){}
+    if(activePointerType==='pen')return;
+    if(touchPointers.size>=2||penOnly){
+      beginTouchScroll();e.preventDefault();return;
+    }
+    if(touchGestureLock)return;
+  }
+  if(e.pointerType==='pen'){
+    // Стилус всегда имеет приоритет над пальцами.
+    if(activePointerType==='touch')cancelActiveDrawing();
+    touchScrolling=false;touchScrollOrigin=null;
+    if(touchPointers.size)touchGestureLock=true;
   }
   if(activePointer!==null)return;
-  e.preventDefault();activePointer=e.pointerId;paper.setPointerCapture(e.pointerId);remember();
+  e.preventDefault();activePointer=e.pointerId;activePointerType=e.pointerType;
+  try{paper.setPointerCapture(e.pointerId);}catch(_){}
+  if(tool==='text'){
+    pendingText={x:e.clientX,y:e.clientY,point:pointFrom(e)};
+    return;
+  }
+  remember();
   const p=pointFrom(e);
-  if(tool==='eraser'){activeStroke=null;eraseAt(p);}else activeStroke={tool,color:brushColor,width:brushWidth,points:[p]};
+  if(tool==='eraser'){activeStroke=null;eraseAt(p);}
+  else activeStroke={tool,color:brushColor,width:brushWidth,points:[p]};
   redraw();
 });
 paper.addEventListener('pointermove',e=>{
-  if(readOnly||activePointer!==e.pointerId)return;e.preventDefault();
-  const events=e.getCoalescedEvents?e.getCoalescedEvents():[e];
-  for(const sample of events){const p=pointFrom(sample);if(tool==='eraser')eraseAt(p);
+  if(readOnly)return;
+  if(e.pointerType==='touch'&&scrollPaperWithTouch(e))return;
+  if(activePointer!==e.pointerId)return;
+  e.preventDefault();
+  if(pendingText){
+    if(Math.hypot(e.clientX-pendingText.x,e.clientY-pendingText.y)>12)pendingText.moved=true;
+    return;
+  }
+  const events=typeof e.getCoalescedEvents==='function' ? (e.getCoalescedEvents()||[]) : [];
+  for(const sample of events.length?events:[e]){
+    const p=pointFrom(sample);
+    if(tool==='eraser')eraseAt(p);
     else if(activeStroke){
       const last=activeStroke.points.at(-1);
       if(['line','rect'].includes(tool))activeStroke.points=[activeStroke.points[0],p];
       else if(Math.hypot(last[0]-p[0],last[1]-p[1])>.45)activeStroke.points.push(p);
     }
-  }redraw();
+  }
+  scheduleRedraw();
 });
-function stopDrawing(e){
-  if(readOnly){handleReadingEnd(e);return;}
-  if(activePointer!==e.pointerId)return;
-  activePointer=null;
-  if(activeStroke){current()?.pages[pageIndex].push(activeStroke);activeStroke=null;}
+function finishInput(e,cancelled=false){
+  if(readOnly){if(cancelled)swipeStart=null;else handleReadingEnd(e);return;}
+  const ownPointer=activePointer===e.pointerId;
+  if(e.pointerType==='touch')releaseTouch(e.pointerId);
+  if(!ownPointer)return;
+  if(cancelled&&activePointerType==='touch'){
+    cancelActiveDrawing();return;
+  }
+  const textRequest=pendingText;
+  activePointer=null;activePointerType=null;pendingText=null;
+  if(textRequest){
+    if(!cancelled&&!textRequest.moved){
+      const value=prompt('Введи текст, который нужно разместить на странице:');
+      if(value)addTypedText(value,textRequest.point);
+    }
+    return;
+  }
+  if(activeStroke){
+    // Добавляем конечную точку – короткие штрихи не теряются.
+    if(!cancelled&&tool!=='line'&&tool!=='rect'){
+      const p=pointFrom(e),last=activeStroke.points.at(-1);
+      if(Math.hypot(last[0]-p[0],last[1]-p[1])>.45)activeStroke.points.push(p);
+    }
+    current()?.pages[pageIndex].push(activeStroke);activeStroke=null;
+  }
   redraw();changed();render();
 }
-paper.addEventListener('pointerup',stopDrawing);
-paper.addEventListener('pointercancel',e=>{if(readOnly){swipeStart=null;return;}stopDrawing(e);});
-paper.addEventListener('lostpointercapture',e=>{if(!readOnly&&activePointer===e.pointerId)stopDrawing(e);});
+paper.addEventListener('pointerup',e=>finishInput(e));
+paper.addEventListener('pointercancel',e=>finishInput(e,true));
+paper.addEventListener('lostpointercapture',e=>{
+  if(!readOnly&&activePointer===e.pointerId)finishInput(e,true);
+  else if(e.pointerType==='touch'&&touchPointers.has(e.pointerId))releaseTouch(e.pointerId);
+});
 function useHistory(source,target){const n=current();if(readOnly||!n||!source.length)return;target.push(clone(n.pages[pageIndex]));n.pages[pageIndex]=source.pop();changed();render();}
 $('undoBtn').onclick=()=>useHistory(history,future);$('redoBtn').onclick=()=>useHistory(future,history);
 function chooseTool(next){tool=next;document.querySelectorAll('[data-tool]').forEach(btn=>btn.classList.toggle('active',btn.dataset.tool===tool));}
 for(const btn of document.querySelectorAll('[data-tool]'))btn.onclick=()=>chooseTool(btn.dataset.tool);
 for(const c of COLORS){const btn=document.createElement('button');btn.className='swatch'+(c===brushColor?' selected':'');btn.style.background=c;btn.title='Цвет '+c;btn.setAttribute('aria-label','Цвет '+c);btn.onclick=()=>{brushColor=c;document.querySelectorAll('.swatch').forEach(b=>b.classList.toggle('selected',b===btn));};$('colors').append(btn);}
-$('widthSelect').onchange=e=>brushWidth=Number(e.target.value);
-$('penOnly').onchange=e=>{penOnly=e.target.checked;syncTouchAction();};
+function showWidth(){
+  $('widthSelect').value=String(brushWidth);
+  $('widthValue').textContent=String(brushWidth).replace('.',',');
+}
+showWidth();
+$('widthSelect').addEventListener('input',e=>{
+  brushWidth=Number(e.target.value);
+  $('widthValue').textContent=String(brushWidth).replace('.',',');
+  localStorage.setItem('listik_brush_width',String(brushWidth));
+});
+$('penOnly').checked=penOnly;
+$('penOnly').onchange=e=>{
+  penOnly=e.target.checked;
+  localStorage.setItem('listik_pen_only',String(penOnly));
+  syncTouchAction();
+};
 $('paperType').onchange=e=>{if(readOnly||!current())return;current().paper=validPaper(e.target.value);changed();render();};
 $('modeBtn').onclick=()=>{
-  readOnly=!readOnly;activeStroke=null;activePointer=null;swipeStart=null;
+  readOnly=!readOnly;activeStroke=null;activePointer=null;activePointerType=null;
+  pendingText=null;swipeStart=null;touchPointers.clear();touchScrolling=false;
+  touchScrollOrigin=null;touchGestureLock=false;
   document.body.classList.toggle('read-mode',readOnly);
   $('modeBtn').classList.toggle('reading',readOnly);$('modeBtn').setAttribute('aria-pressed',String(readOnly));
   $('modeIcon').textContent=readOnly?'✎':'◉';$('modeText').textContent=readOnly?'Редактировать':'Режим чтения';
