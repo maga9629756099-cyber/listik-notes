@@ -48,15 +48,18 @@
         <nav class="toolbar" aria-label="Инструменты">
           <div class="tools-group">
             <button class="tool active" data-tool="pen" title="Ручка">✎ <span>Ручка</span></button>
-            <button class="tool" data-tool="pencil" title="Карандаш">✐ <span>Карандаш</span></button>
             <button class="tool" data-tool="marker" title="Маркер">▰ <span>Маркер</span></button>
             <button class="tool" data-tool="eraser" title="Ластик">⌫ <span>Ластик</span></button>
             <button class="tool" data-tool="line" title="Прямая линия">╱ <span>Линия</span></button>
-            <button class="tool" data-tool="rect" title="Прямоугольник">▢ <span>Фигура</span></button>
+            <button class="tool" data-tool="rect" title="Фигуры">▢ <span>Фигуры</span></button>
             <button class="tool" data-tool="text" title="Добавить печатный текст">T <span>Текст</span></button>
           </div>
           <div class="tool-divider"></div>
+          <label class="extra-select">Ручка <select id="penStyle"><option value="round">Обычная</option><option value="calligraphy">Каллиграфическая</option></select></label>
+          <label class="extra-select">Фигура <select id="shapeSelect"><option value="rect">Прямоугольник</option><option value="square">Квадрат</option><option value="ellipse">Овал</option><option value="circle">Круг</option><option value="triangle">Треугольник</option><option value="diamond">Ромб</option><option value="arrow">Стрелка</option></select></label>
+          <label class="extra-select">Ластик <select id="eraserMode"><option value="stroke">Штрих целиком</option><option value="partial">Часть штриха</option><option value="area">Область рамкой</option></select></label>
           <div id="colors" class="colors" aria-label="Цвет чернил"></div>
+          <label class="color-custom" title="Выбрать любой цвет">Любой цвет <input type="color" id="customColor" value="#303044"></label>
           <label class="width-control" for="widthSelect"><span>Толщина</span><input id="widthSelect" type="range" min="0.5" max="28" step="0.5" value="4" aria-label="Толщина линии"><output id="widthValue" for="widthSelect">4</output></label>
           <div class="tool-divider"></div>
           <button class="icon-btn" id="undoBtn" title="Отменить">↶</button>

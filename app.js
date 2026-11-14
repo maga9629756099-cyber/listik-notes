@@ -10,6 +10,8 @@ const paper = $('paper'), context = paper.getContext('2d'), wrap = $('pageWrap')
 let notes = [], selectedId = null, pageIndex = 0, tool = 'pen', brushColor = COLORS[0];
 const savedWidth = Number(localStorage.getItem('listik_brush_width'));
 let brushWidth = Number.isFinite(savedWidth) && savedWidth >= .5 && savedWidth <= 28 ? savedWidth : 4;
+let penStyle = localStorage.getItem('listik_pen_style') || 'round';
+let eraserMode = 'stroke', shapeChoice = 'rect', areaStart = null, areaEnd = null, eraserDirty = false;
 let penOnly = localStorage.getItem('listik_pen_only') === 'true';
 let readOnly = false, activePointer = null, activePointerType = null, activeStroke = null, pendingText = null, swipeStart = null;
 // На холсте один палец пишет (когда отключено «только стилусом»), два пальца перемещают лист.
@@ -36,7 +38,8 @@ function normalize(raw){
       tool:String(s.tool||'pen'), color:String(s.color||'#303044'), width:Number(s.width)||4,
       points:s.points.filter(q => Array.isArray(q) && Number.isFinite(q[0]) && Number.isFinite(q[1]))
         .map(q => [Math.max(0,Math.min(W,q[0])),Math.max(0,Math.min(H,q[1])),q.length>2 ? Math.max(0,Math.min(1,Number(q[2])||0)) : undefined]),
-      value: s.tool === 'text' ? String(s.value||'').slice(0,3000) : undefined
+      value: s.tool === 'text' ? String(s.value||'').slice(0,3000) : undefined,
+      style: s.style === 'calligraphy' ? 'calligraphy' : 'round'
     })) : [])
   }));
 }
@@ -106,50 +109,112 @@ function render(){
     : 'Один палец или стилус пишет · двумя пальцами перемещай лист.';
   applyPaper();redraw();renderList();syncTouchAction();
 }
+const SHAPES = new Set(['line','rect','square','ellipse','circle','triangle','diamond','arrow']);
+function shapePoints(s){
+  const a=s.points[0],b=s.points.at(-1)||a,x=a[0],y=a[1],dx=b[0]-x,dy=b[1]-y;
+  if(s.tool==='line')return [a,b];
+  let x2=b[0],y2=b[1];
+  if(['square','circle'].includes(s.tool)){const side=Math.max(Math.abs(dx),Math.abs(dy));x2=x+Math.sign(dx||1)*side;y2=y+Math.sign(dy||1)*side;}
+  const left=Math.min(x,x2),right=Math.max(x,x2),top=Math.min(y,y2),bottom=Math.max(y,y2),cx=(left+right)/2,cy=(top+bottom)/2;
+  if(['rect','square'].includes(s.tool))return [[left,top],[right,top],[right,bottom],[left,bottom],[left,top]];
+  if(s.tool==='triangle')return [[cx,top],[right,bottom],[left,bottom],[cx,top]];
+  if(s.tool==='diamond')return [[cx,top],[right,cy],[cx,bottom],[left,cy],[cx,top]];
+  if(['ellipse','circle'].includes(s.tool))return Array.from({length:97},(_,i)=>[cx+(right-left)/2*Math.cos(i*Math.PI*2/96),cy+(bottom-top)/2*Math.sin(i*Math.PI*2/96)]);
+  if(s.tool==='arrow'){const ang=Math.atan2(dy,dx),len=Math.min(55,Math.max(16,Math.hypot(dx,dy)*.23));return [a,b,[b[0]-len*Math.cos(ang-.55),b[1]-len*Math.sin(ang-.55)],b,[b[0]-len*Math.cos(ang+.55),b[1]-len*Math.sin(ang+.55)]];}
+  return s.points;
+}
 function drawStroke(c,s){
   if(!s||!s.points?.length)return;
-  const pts=s.points,base=s.width||4;c.save();c.lineCap='round';c.lineJoin='round';c.strokeStyle=s.color||'#303044';c.fillStyle=s.color||'#303044';
-  if(s.tool==='text'){
-    c.globalAlpha=1;c.font=`${Math.max(16,base*10)}px -apple-system, Arial, sans-serif`;
-    String(s.value||'').split('\n').forEach((line,i)=>c.fillText(line,pts[0][0],pts[0][1]+i*Math.max(22,base*13),W-pts[0][0]));c.restore();return;
-  }
-  if(s.tool==='line'||s.tool==='rect'){
-    const a=pts[0],b=pts[pts.length-1]||a;c.lineWidth=base;c.beginPath();
-    if(s.tool==='line'){c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);}else c.rect(a[0],a[1],b[0]-a[0],b[1]-a[1]);
-    c.stroke();c.restore();return;
-  }
-  c.globalAlpha=s.tool==='marker'?.3:s.tool==='pencil'?.65:1;
-  let width=s.tool==='marker'?base*7:s.tool==='pencil'?base*.85:base;
+  const pts=SHAPES.has(s.tool)?shapePoints(s):s.points,base=s.width||4;
+  c.save();c.lineCap='round';c.lineJoin='round';c.strokeStyle=s.color||'#303044';c.fillStyle=s.color||'#303044';
+  if(s.tool==='text'){c.font=`${Math.max(16,base*10)}px -apple-system, Arial, sans-serif`;String(s.value||'').split('\n').forEach((line,i)=>c.fillText(line,pts[0][0],pts[0][1]+i*Math.max(22,base*13),W-pts[0][0]));c.restore();return;}
+  c.globalAlpha=s.tool==='marker'?.27:s.tool==='pencil'?.65:1;
+  const width=s.tool==='marker'?base*7:s.tool==='pencil'?base*.85:base;
   if(pts.length===1){c.beginPath();c.arc(pts[0][0],pts[0][1],width/2,0,Math.PI*2);c.fill();c.restore();return;}
-  if(s.tool==='pen' && pts.some(p=>p.length>2 && p[2]!==undefined)){
+  if(s.tool==='pen'&&s.style==='calligraphy'){
+    // Наклоненное эллиптическое перо: толщина зависит от направления движения.
     for(let i=1;i<pts.length;i++){
-      const a=pts[i-1],b=pts[i];const pressure=(a[2]??.5)+(b[2]??.5);
-      c.lineWidth=width*(0.65+pressure*.37);c.beginPath();c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);c.stroke();
+      const a=pts[i-1],b=pts[i],dx=b[0]-a[0],dy=b[1]-a[1],len=Math.hypot(dx,dy);if(!len)continue;
+      const nx=-dy/len,ny=dx/len,tiltX=.83,tiltY=.55;
+      const factor=Math.sqrt((nx*tiltX+ny*tiltY)**2*.85+.13);
+      c.lineWidth=Math.max(.5,width*(.3+factor*1.65));c.beginPath();c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);c.stroke();
     }
+  }else if(s.tool==='pen'&&pts.some(p=>p.length>2&&p[2]!==undefined)){
+    for(let i=1;i<pts.length;i++){const a=pts[i-1],b=pts[i];c.lineWidth=width*(.65+((a[2]??.5)+(b[2]??.5))*.37);c.beginPath();c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);c.stroke();}
   }else{
     c.lineWidth=width;c.beginPath();c.moveTo(pts[0][0],pts[0][1]);
-    for(let i=1;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];c.quadraticCurveTo(a[0],a[1],(a[0]+b[0])/2,(a[1]+b[1])/2);}
-    c.lineTo(pts[pts.length-1][0],pts[pts.length-1][1]);c.stroke();
+    if(SHAPES.has(s.tool)){for(let i=1;i<pts.length;i++)c.lineTo(pts[i][0],pts[i][1]);}
+    else{for(let i=1;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];c.quadraticCurveTo(a[0],a[1],(a[0]+b[0])/2,(a[1]+b[1])/2);}c.lineTo(pts.at(-1)[0],pts.at(-1)[1]);}
+    c.stroke();
   }
   c.restore();
+}
+function paintStrokes(c,strokes){
+  // Маркер всегда под чернилами, даже если он нанесен позднее.
+  for(const s of strokes||[])if(s.tool==='marker')drawStroke(c,s);
+  for(const s of strokes||[])if(s.tool!=='marker')drawStroke(c,s);
 }
 function redraw(){
   if(paintFrame){cancelAnimationFrame(paintFrame);paintFrame=0;}
   context.clearRect(0,0,W,H);
-  for(const s of current()?.pages[pageIndex]||[])drawStroke(context,s);
-  if(activeStroke)drawStroke(context,activeStroke);
+  const strokes=current()?.pages[pageIndex]||[];
+  if(activeStroke)paintStrokes(context,[...strokes,activeStroke]);else paintStrokes(context,strokes);
+  if(areaStart&&areaEnd){context.save();context.strokeStyle='#7664d2';context.lineWidth=2;context.setLineDash([10,7]);context.strokeRect(areaStart[0],areaStart[1],areaEnd[0]-areaStart[0],areaEnd[1]-areaStart[1]);context.restore();}
 }
 function pointFrom(e){const r=paper.getBoundingClientRect();return [Math.max(0,Math.min(W, (e.clientX-r.left)*W/r.width)),Math.max(0,Math.min(H, (e.clientY-r.top)*H/r.height)), e.pointerType==='pen' ? (e.pressure || 0.5) : undefined];}
 function segmentDistance(p,a,b){const dx=b[0]-a[0],dy=b[1]-a[1],sq=dx*dx+dy*dy;if(!sq)return Math.hypot(p[0]-a[0],p[1]-a[1]);const t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/sq));return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);}
+function strokeNear(s,p,radius){
+  const pts=SHAPES.has(s.tool)?shapePoints(s):s.points||[];
+  if(!pts.length)return false;
+  if(s.tool==='text')return Math.abs(p[0]-pts[0][0])<150&&Math.abs(p[1]-pts[0][1])<65;
+  return pts.some((q,i)=>segmentDistance(p,q,pts[Math.min(i+1,pts.length-1)])<radius+(s.tool==='marker'?s.width*3.5:s.width*.5));
+}
 function eraseAt(p){
-  const n=current();if(!n)return false;const before=n.pages[pageIndex];
-  const remaining=before.filter(s=>{
-    const pts=s.points||[],tolerance=20+(s.width||4)*2;
-    if(s.tool==='text')return !(Math.abs(p[0]-pts[0][0])<150 && Math.abs(p[1]-pts[0][1])<65);
-    if(s.tool==='rect'&&pts.length>1){const a=pts[0],b=pts.at(-1);const corners=[a,[b[0],a[1]],b,[a[0],b[1]],a];return !corners.some((corner,i)=>i&&segmentDistance(p,corners[i-1],corner)<tolerance);}
-    return !pts.some((q,i)=>segmentDistance(p,q,pts[Math.min(i+1,pts.length-1)])<tolerance);
-  });
-  if(remaining.length===before.length)return false;n.pages[pageIndex]=remaining;return true;
+  const n=current();if(!n)return false;
+  const before=n.pages[pageIndex],radius=Math.max(5,brushWidth*1.5);
+  if(eraserMode==='stroke'){
+    const index=before.findLastIndex(s=>strokeNear(s,p,radius+7));if(index<0)return false;
+    before.splice(index,1);return true;
+  }
+  if(eraserMode!=='partial')return false;
+  let changedAny=false,output=[];
+  for(const s of before){
+    if(s.tool==='text'){if(strokeNear(s,p,radius)){changedAny=true;continue;}output.push(s);continue;}
+    // Геометрические фигуры переводятся в сегменты, чтобы стирать только участок контура.
+    const pts=SHAPES.has(s.tool)?shapePoints(s):s.points;
+    const dense=[];
+    for(let i=0;i<pts.length;i++){
+      if(i===0){dense.push(pts[i]);continue;}
+      const a=pts[i-1],b=pts[i],steps=Math.max(1,Math.ceil(Math.hypot(b[0]-a[0],b[1]-a[1])/3));
+      for(let j=1;j<=steps;j++)dense.push([a[0]+(b[0]-a[0])*j/steps,a[1]+(b[1]-a[1])*j/steps]);
+    }
+    const removed=dense.map(q=>Math.hypot(q[0]-p[0],q[1]-p[1])<radius+(s.tool==='marker'?s.width*3.5:s.width*.5));
+    if(!removed.some(Boolean)){output.push(s);continue;}
+    changedAny=true;let run=[];
+    const flushRun=()=>{if(run.length)output.push({...s,tool:SHAPES.has(s.tool)?'pen':s.tool,points:run});run=[];};
+    for(let i=0;i<dense.length;i++){if(removed[i])flushRun();else run.push(dense[i]);}flushRun();
+  }
+  if(changedAny)n.pages[pageIndex]=output;
+  return changedAny;
+}
+function eraseArea(a,b){
+  const n=current();if(!n)return false;
+  const x0=Math.min(a[0],b[0]),x1=Math.max(a[0],b[0]),y0=Math.min(a[1],b[1]),y1=Math.max(a[1],b[1]);
+  const inside=p=>p[0]>=x0&&p[0]<=x1&&p[1]>=y0&&p[1]<=y1;
+  let modified=false,out=[];
+  for(const s of n.pages[pageIndex]){
+    if(s.tool==='text'){if(inside(s.points[0]))modified=true;else out.push(s);continue;}
+    const pts=SHAPES.has(s.tool)?shapePoints(s):s.points,dense=[];
+    for(let i=0;i<pts.length;i++){
+      if(i===0){dense.push(pts[i]);continue;}
+      const a=pts[i-1],b=pts[i],steps=Math.max(1,Math.ceil(Math.hypot(b[0]-a[0],b[1]-a[1])/3));
+      for(let j=1;j<=steps;j++)dense.push([a[0]+(b[0]-a[0])*j/steps,a[1]+(b[1]-a[1])*j/steps]);
+    }
+    if(!dense.some(inside)){out.push(s);continue;}modified=true;
+    let run=[];const flush=()=>{if(run.length)out.push({...s,tool:SHAPES.has(s.tool)?'pen':s.tool,points:run});run=[];};
+    for(const pt of dense){if(inside(pt))flush();else run.push(pt);}flush();
+  }
+  if(modified)n.pages[pageIndex]=out;return modified;
 }
 function remember(){if(!current())return;history.push(clone(current().pages[pageIndex]));if(history.length>80)history.shift();future=[];}
 function changePage(delta){
@@ -188,7 +253,7 @@ function cancelActiveDrawing(){
     current().pages[pageIndex]=history.pop();
     future=[];
   }
-  activePointer=null;activePointerType=null;activeStroke=null;pendingText=null;
+  activePointer=null;activePointerType=null;activeStroke=null;pendingText=null;areaStart=null;areaEnd=null;eraserDirty=false;
   redraw();render();
 }
 function beginTouchScroll(){
@@ -248,8 +313,8 @@ paper.addEventListener('pointerdown',e=>{
   }
   remember();
   const p=pointFrom(e);
-  if(tool==='eraser'){activeStroke=null;eraseAt(p);}
-  else activeStroke={tool,color:brushColor,width:brushWidth,points:[p]};
+  if(tool==='eraser'){activeStroke=null;eraserDirty=false;if(eraserMode==='area'){areaStart=p;areaEnd=p;}else eraserDirty=eraseAt(p);}
+  else activeStroke={tool:tool==='rect'?shapeChoice:tool,color:brushColor,width:brushWidth,style:penStyle,points:[p]};
   redraw();
 });
 paper.addEventListener('pointermove',e=>{
@@ -264,7 +329,7 @@ paper.addEventListener('pointermove',e=>{
   const events=typeof e.getCoalescedEvents==='function' ? (e.getCoalescedEvents()||[]) : [];
   for(const sample of events.length?events:[e]){
     const p=pointFrom(sample);
-    if(tool==='eraser')eraseAt(p);
+    if(tool==='eraser'){if(eraserMode==='area')areaEnd=p;else eraserDirty=eraseAt(p)||eraserDirty;}
     else if(activeStroke){
       const last=activeStroke.points.at(-1);
       if(['line','rect'].includes(tool))activeStroke.points=[activeStroke.points[0],p];
@@ -290,6 +355,7 @@ function finishInput(e,cancelled=false){
     }
     return;
   }
+  if(tool==='eraser'&&eraserMode==='area'&&areaStart){eraserDirty=eraseArea(areaStart,areaEnd||areaStart)||eraserDirty;areaStart=null;areaEnd=null;}
   if(activeStroke){
     // Добавляем конечную точку – короткие штрихи не теряются.
     if(!cancelled&&tool!=='line'&&tool!=='rect'){
@@ -298,7 +364,7 @@ function finishInput(e,cancelled=false){
     }
     current()?.pages[pageIndex].push(activeStroke);activeStroke=null;
   }
-  redraw();changed();render();
+  redraw();if(activeStroke||eraserDirty||tool!=='eraser')changed();render();
 }
 paper.addEventListener('pointerup',e=>finishInput(e));
 paper.addEventListener('pointercancel',e=>finishInput(e,true));
@@ -310,7 +376,11 @@ function useHistory(source,target){const n=current();if(readOnly||!n||!source.le
 $('undoBtn').onclick=()=>useHistory(history,future);$('redoBtn').onclick=()=>useHistory(future,history);
 function chooseTool(next){tool=next;document.querySelectorAll('[data-tool]').forEach(btn=>btn.classList.toggle('active',btn.dataset.tool===tool));}
 for(const btn of document.querySelectorAll('[data-tool]'))btn.onclick=()=>chooseTool(btn.dataset.tool);
-for(const c of COLORS){const btn=document.createElement('button');btn.className='swatch'+(c===brushColor?' selected':'');btn.style.background=c;btn.title='Цвет '+c;btn.setAttribute('aria-label','Цвет '+c);btn.onclick=()=>{brushColor=c;document.querySelectorAll('.swatch').forEach(b=>b.classList.toggle('selected',b===btn));};$('colors').append(btn);}
+$('penStyle').value=penStyle;$('penStyle').onchange=e=>{penStyle=e.target.value;localStorage.setItem('listik_pen_style',penStyle);};
+$('shapeSelect').onchange=e=>shapeChoice=e.target.value;
+$('eraserMode').onchange=e=>eraserMode=e.target.value;
+$('customColor').oninput=e=>{brushColor=e.target.value;document.querySelectorAll('.swatch').forEach(b=>b.classList.remove('selected'));};
+for(const c of COLORS){const btn=document.createElement('button');btn.className='swatch'+(c===brushColor?' selected':'');btn.style.background=c;btn.title='Цвет '+c;btn.setAttribute('aria-label','Цвет '+c);btn.onclick=()=>{brushColor=c;$('customColor').value=c;document.querySelectorAll('.swatch').forEach(b=>b.classList.toggle('selected',b===btn));};$('colors').append(btn);}
 function showWidth(){
   $('widthSelect').value=String(brushWidth);
   $('widthValue').textContent=String(brushWidth).replace('.',',');
@@ -349,7 +419,7 @@ $('openSide').onclick=()=>toggleSide(true);$('closeSide').onclick=()=>toggleSide
 $('search').oninput=renderList;
 function previewCanvas(c,paperKind,strokes){
   c.width=240;c.height=336;const g=c.getContext('2d');g.fillStyle='#fffefa';g.fillRect(0,0,240,336);g.scale(.24,.24);
-  drawBackground(g,paperKind);for(const s of strokes||[])drawStroke(g,s);
+  drawBackground(g,paperKind);paintStrokes(g,strokes);
 }
 $('pageOverviewBtn').onclick=()=>{
   const grid=$('pageGrid');grid.textContent='';const n=current();if(!n)return;
@@ -368,7 +438,7 @@ function drawBackground(c,kind){
   if(kind==='dots'){for(let y=47;y<H;y+=47)for(let x=47;x<W;x+=47){c.beginPath();c.arc(x,y,1.5,0,Math.PI*2);c.fill();}}
   c.restore();
 }
-function exportCanvas(strokes,kind){const out=document.createElement('canvas');out.width=W;out.height=H;const c=out.getContext('2d');c.fillStyle='#fffefa';c.fillRect(0,0,W,H);drawBackground(c,kind);for(const s of strokes)drawStroke(c,s);return out;}
+function exportCanvas(strokes,kind){const out=document.createElement('canvas');out.width=W;out.height=H;const c=out.getContext('2d');c.fillStyle='#fffefa';c.fillRect(0,0,W,H);drawBackground(c,kind);paintStrokes(c,strokes);return out;}
 function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
 $('savePNG').onclick=()=>{const n=current();if(!n)return;exportCanvas(n.pages[pageIndex],n.paper).toBlob(blob=>blob&&download(blob,`Листик-страница-${pageIndex+1}.png`),'image/png');};
 $('savePDF').onclick=()=>{
